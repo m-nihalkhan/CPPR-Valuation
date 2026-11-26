@@ -59,7 +59,7 @@ To run it on your own computer instead: `pip install -r requirements.txt`, then 
 >
 > **Data:** on load, fetch JSON from `https://raw.githubusercontent.com/<your-username>/cppr-valuation/main/data/valuation.json` and add a "Refresh" button that re-fetches. Shape:
 > `{ updated: string, etfs: { [etfCode]: { summary: {...}, holdings: [ {...} ] } } }`.
-> Summary fields: `holdings, with_data, loss_making, market_value_aud, pe_trailing_weighted, pe_trailing_coverage, pe_forward_weighted, pe_forward_coverage, ev_ebitda_weighted, ev_ebitda_coverage, p_nav_weighted, p_nav_coverage`.
+> Summary fields: `holdings, with_data, loss_making, market_value_aud, pe_trailing_weighted, pe_trailing_coverage, pe_current_weighted, pe_current_coverage, pe_forward_weighted, pe_forward_coverage, ev_ebitda_weighted, ev_ebitda_coverage, p_nav_weighted, p_nav_coverage`.
 > Holding fields: `company, ticker, country, weight, price, currency, equity_value_m, equity_value_aud_m, net_debt_m, minority_m, enterprise_value_m, enterprise_value_aud_m, ebitda_ttm_m, ev_ebitda, pe_trailing, pe_current, pe_forward, nav_per_share, p_nav, broker_nav, broker_nav_source, p_broker_nav, yahoo_pe, yahoo_forward_pe, yahoo_ev_ebitda, status, last_updated, statement_date, next_earnings_date, new_results`.
 > Summary also has `new_results` (array of company names) and `upcoming_earnings` (array of `{company, date}`).
 > Any metric can be a number, the string "NM" (not meaningful, e.g. negative earnings), or null (no data). Show null as "n/a" and "NM" as "NM" in grey.
@@ -69,9 +69,11 @@ To run it on your own computer instead: `pip install -r requirements.txt`, then 
 > 1b. An alert strip under the header when the selected ETF's `summary.new_results` is non-empty ("New results: …"), and a small "Reporting soon" list from `summary.upcoming_earnings`.
 > 2. Two dropdowns side by side: **ETF** (keys of `etfs`), then **Company** (holdings of the selected ETF, sorted by weight, descending). Changing the ETF resets the company to the largest holding.
 > 3. **Company panel** (cards): Price + currency, Weight, Equity value (local m and A$m), Enterprise value (local m and A$m), Trailing P/E, Current P/E, Forward P/E, EV/EBITDA, Book NAV/share, P/NAV, Broker NAV and P/Broker NAV (only if `broker_nav` is set, with the source as a tooltip). Below that, a small "Yahoo cross-check" row with Yahoo's own P/E, forward P/E and EV/EBITDA, plus the data status, last-updated time, latest statement date and next earnings date. Show a "New results" badge when `new_results` is true.
-> 4. **ETF summary** strip: number of holdings, holdings with data, loss-making count, fund value (A$), and weighted Trailing P/E, Forward P/E, EV/EBITDA and P/NAV, each with its coverage %.
-> 5. **Holdings table** for the selected ETF: Company, Ticker, Country, Weight, Price, Trailing P/E, Forward P/E, EV/EBITDA, P/NAV, Equity value (A$m). Sortable columns, a search box, and clicking a row selects that company in the dropdown.
+> 4. **ETF summary** strip: number of holdings, holdings with data, loss-making count, fund value (A$), and weighted Trailing P/E, Current P/E, Forward P/E, EV/EBITDA and P/NAV, each with its coverage %.
+> 5. **Holdings table** for the selected ETF: Company, Ticker, Country, Weight, Price (A$), Trailing P/E, Current P/E, Forward P/E, EV/EBITDA, P/NAV, Equity value (A$m). Sortable columns, a search box, and clicking a row selects that company in the dropdown.
 > 6. A bar chart of Forward P/E by company (skip NM/n/a) for the selected ETF.
+>
+> **Currency:** show every price and value in Australian dollars (`price_aud`, `equity_value_aud_m`, `enterprise_value_aud_m`), prefixed `A$`. Show the local price only as small grey secondary text.
 >
 > **Formatting:** multiples as `12.3x`, money in millions with 1 decimal, weights as `%` with 1 decimal. Clean, professional finance styling, dark navy accents, responsive.
 

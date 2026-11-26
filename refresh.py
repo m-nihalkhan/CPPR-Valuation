@@ -36,6 +36,14 @@ DATA_COLS = ["ticker", "status", "updated", "price", "ccy", "fin_ccy", "fx_fin_t
 DATA_HEADERS = {"stmt_date": "Latest statement period end", "next_earnings": "Next earnings date (Yahoo)"}
 
 
+SISTER_SUFFIXES = [(".TO", ".V"), (".V", ".TO"), (".V", ".CN"), (".TO", ".NE"), (".AX", ".NZ")]
+
+
+def alternates(ticker):
+    """Other exchange suffixes to try if a ticker returns nothing."""
+    return [ticker[: -len(a)] + b for a, b in SISTER_SUFFIXES if ticker.endswith(a)]
+
+
 def period_end(*dfs):
     """Most recent period-end date (YYYY-MM-DD) across yfinance statements, or None."""
     best = None
@@ -215,7 +223,7 @@ def metrics(d, weight, broker_nav=None):
     ebitda = d["ebitda_ttm"] * f / 1e6 if d.get("ebitda_ttm") is not None else None
     nav = d["equity"] * f / sh if (d.get("equity") is not None and sh) else None
     out.update({
-        "price": p, "currency": d["ccy"],
+        "price": p, "currency": d["ccy"], "price_aud": p * aud if aud else None, "fx_to_aud": aud,
         "equity_value_m": eq, "net_debt_m": nd, "minority_m": mi, "enterprise_value_m": ev,
         "ebitda_ttm_m": ebitda, "ev_ebitda": ratio(ev, ebitda) if ev is not None else None,
         "pe_trailing": ratio(p, d.get("eps_ttm")), "pe_current": ratio(p, d.get("eps_fy0")),
@@ -263,7 +271,7 @@ def main():
         if tk in seen:
             continue
         seen.add(tk)
-        rec, err = None, None
+        rec, err, used = None, None, tk
         for attempt in range(RETRIES):
             try:
                 rec = fetch(tk)
@@ -271,8 +279,16 @@ def main():
             except Exception as e:  # rate limit, bad ticker, missing data…
                 err = e
                 time.sleep(PAUSE * (attempt + 2) * 2)
+        if not rec:   # wrong exchange suffix? try the sister listing (e.g. .TO <-> .V)
+            for alt in alternates(tk):
+                try:
+                    rec, used = fetch(alt), alt
+                    break
+                except Exception as e:
+                    err = e
         if rec:
-            rec.update(ticker=tk, status="OK", updated=stamp)
+            rec.update(ticker=tk, status="OK" if used == tk else f"OK (via {used} – update Holdings)",
+                       updated=stamp)
             old = (prev.get(tk) or {}).get("stmt_date")
             # New financial statements picked up since the last run?
             rec["new_results"] = bool(old and rec.get("stmt_date") and str(rec["stmt_date"]) > str(old))
@@ -327,7 +343,7 @@ def main():
                    "with_data": sum(1 for x in items if x.get("price") is not None),
                    "loss_making": sum(1 for x in items if x.get("pe_trailing") == "NM"),
                    "market_value_aud": sum(h["mv"] for h in hs)}
-        for key in ("pe_trailing", "pe_forward", "ev_ebitda", "p_nav"):
+        for key in ("pe_trailing", "pe_current", "pe_forward", "ev_ebitda", "p_nav"):
             summary[f"{key}_weighted"], summary[f"{key}_coverage"] = harmonic(items, key)
         horizon = (now.date() + dt.timedelta(days=14)).isoformat()
         summary["new_results"] = [x["company"] for x in items if x.get("new_results")]

@@ -2,8 +2,10 @@ name: Daily valuation refresh
 
 on:
   schedule:
+    # 21:20 UTC Mon–Fri = Tue–Sat 8:20am Sydney in summer (AEDT) / 7:20am in winter (AEST).
+    # Always after the US/Canadian close, so every holding has a completed close on its home exchange.
     - cron: "20 21 * * 1-5"
-  workflow_dispatch:
+  workflow_dispatch:        # "Run workflow" button
     inputs:
       send_email:
         description: "Also send the email (immediately)?"
@@ -16,14 +18,17 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: python refresh.py
+      - name: Refresh model
+        env:
+          WHATIF_COPPER_PRICE: ${{ vars.WHATIF_COPPER_PRICE }}   # optional: your what-if copper price (US$/lb)
+        run: python refresh.py
       - name: Commit updated model and JSON
         run: |
           git config user.name "github-actions[bot]"
@@ -31,7 +36,8 @@ jobs:
           git add CPPR_Valuation_Model.xlsx data/valuation.json
           git diff --staged --quiet || git commit -m "Daily refresh $(date -u +%F)"
           git push
-      - name: Send 8am email
+      # Sends at 8:00 Sydney, or straight after the refresh if that's later (summer)
+      - name: Send email
         if: github.event_name == 'schedule' || inputs.send_email
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}

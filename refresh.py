@@ -481,7 +481,9 @@ def main():
              if x.get("next_earnings_date") and str(x["next_earnings_date"]) <= horizon),
             key=lambda r: r["date"])
         summary.update(copper.etf_summary(items, cu_close, cu_date, prices))
-        summary["copper_whatif"] = copper.whatif_summary(items, summary["copper_beta_weighted"], cu_close, whatif_price)
+        # single-price what-if box only when the WHATIF_COPPER_PRICE setting is used
+        summary["copper_whatif"] = (copper.whatif_summary(items, summary["copper_beta_weighted"], cu_close, whatif_price)
+                                    if os.environ.get("WHATIF_COPPER_PRICE") else None)
         out["etfs"][e] = {"summary": summary, "holdings": items}
     JSON_OUT.parent.mkdir(exist_ok=True)
     JSON_OUT.write_text(json.dumps(out, indent=2, default=str))

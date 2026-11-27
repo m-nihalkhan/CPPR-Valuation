@@ -25,6 +25,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 COPPER_TICKER = "HG=F"
 WEEKS = 104                  # weekly returns used (≈ 2 years)
 MIN_OBS = 52                 # fewer paired weeks than this -> no beta
+SHOCKS = (-0.30, -0.20, -0.10, -0.05, 0.05, 0.10, 0.20, 0.30)   # copper moves shown in the email
 WEAK_R2 = 0.10               # below this the relationship is flagged as weak
 HIST_SHEET, RET_SHEET = "Copper History", "Copper Returns"
 SENS_SHEET = "Copper Sensitivity"
@@ -281,7 +282,7 @@ def etf_summary(items, copper_close, copper_date, prices):
     cu = prices[COPPER_TICKER].dropna()
     wk = float(cu.iloc[-1] / cu.iloc[-2] - 1) if len(cu) >= 2 else None
     scen = {}
-    for shock in (-0.20, -0.10, 0.10, 0.20):
+    for shock in SHOCKS:
         scen[f"{shock:+.0%}"] = beta * shock if beta is not None else None
     ranked = sorted((x for x in items if isinstance(x.get("copper_beta"), (int, float))),
                     key=lambda x: x["copper_beta"], reverse=True)

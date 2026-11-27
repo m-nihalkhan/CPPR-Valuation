@@ -146,12 +146,11 @@ def copper_section(s):
     th = f'style="padding:7px 10px;{FONT};font-size:11px;color:#ffffff;background:{NAVY};text-align:right"'
     td = f'style="padding:7px 10px;{FONT};font-size:12px;color:{INK};border-bottom:1px solid {LINE};text-align:right"'
     tdl = f'style="padding:7px 10px;{FONT};font-size:12px;color:{INK};border-bottom:1px solid {LINE};text-align:left;white-space:nowrap"'
-    heads = ["", "Bear &minus;20%", "&minus;10%", "+10%", "Bull +20%"]
-    keys = ["-20%", "-10%", "+10%", "+20%"]
-    shocks = [-0.2, -0.1, 0.1, 0.2]
+    heads = ["", "Bear<br>&minus;20%", "&minus;10%", "+10%", "Bull<br>+20%"]
+    keys, shocks = ["-20%", "-10%", "+10%", "+20%"], [-0.2, -0.1, 0.1, 0.2]
     price_row = [f"US${cu * (1 + k):,.2f}" if isinstance(cu, (int, float)) else "n/a" for k in shocks]
     move_row = [f"<b>{pct(sc.get(k))}</b>" for k in keys]
-    table = (f'<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid {LINE};margin-top:6px">'
+    table = (f'<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid {LINE};margin-top:6px">'
              + "<tr>" + "".join(f"<th {th}>{h}</th>" for h in heads) + "</tr>"
              + f'<tr><td {tdl}>Copper price</td>' + "".join(f"<td {td}>{v}</td>" for v in price_row) + "</tr>"
              + f'<tr><td {tdl}>Estimated ETF move</td>' + "".join(f"<td {td}>{v}</td>" for v in move_row) + "</tr></table>")
@@ -167,27 +166,11 @@ def copper_section(s):
                      f'border-bottom:1px solid {LINE};white-space:nowrap">&beta; {beta_txt(t.get("beta"))} '
                      f'<span style="font-weight:400;color:{MUTED};font-size:11px">{r2}</span></td></tr>')
     out.append(f'<tr><td style="padding:4px 28px 0"><table width="100%" cellpadding="0" cellspacing="0"><tr>'
-               f'<td width="55%" valign="top" style="padding-right:16px;{FONT};font-size:11px;letter-spacing:.06em;'
+               f'<td width="52%" valign="top" style="padding-right:18px;{FONT};font-size:11px;letter-spacing:.06em;'
                f'text-transform:uppercase;color:{MUTED}">ETF scenarios{table}</td>'
-               f'<td width="45%" valign="top"><div style="{FONT};font-size:11px;letter-spacing:.06em;text-transform:uppercase;'
+               f'<td width="48%" valign="top"><div style="{FONT};font-size:11px;letter-spacing:.06em;text-transform:uppercase;'
                f'color:{MUTED};padding-bottom:4px">Most copper-sensitive holdings</div>'
                f'<table width="100%" cellpadding="0" cellspacing="0">{top_rows}</table></td></tr></table></td></tr>')
-    wi = s.get("copper_whatif")
-    if wi and isinstance(wi.get("price"), (int, float)):
-        rows_ = "".join(
-            f'<tr><td style="padding:4px 0;{FONT};font-size:12px;color:{INK}">{escape(m["company"])}</td>'
-            f'<td align="right" style="padding:4px 0 4px 12px;{FONT};font-size:12px;color:{MUTED}">&beta; {beta_txt(m.get("beta"))}</td>'
-            f'<td align="right" style="padding:4px 0 4px 12px;{FONT};font-size:12px;color:{MUTED};white-space:nowrap">'
-            f'{aud(m.get("price_aud"))} &rarr; <b style="color:{INK}">{aud(m.get("whatif_price_aud"))}</b></td>'
-            f'<td align="right" style="padding:4px 0 4px 12px;{FONT};font-size:12px;font-weight:600">{pct(m.get("move"))}</td></tr>'
-            for m in wi.get("most_affected") or [])
-        out.append(callout("#b8692e", "#fbf1e8",
-                           f'Your what-if: copper at US${wi["price"]:,.2f} ({pct(wi.get("change"), 1, False)} vs actual) '
-                           f'&rarr; estimated ETF move <span style="font-size:15px">{pct(wi.get("etf_move"))}</span>',
-                           f'<span style="color:{MUTED};font-size:12px">Most affected holdings (estimated share-price move):</span>'
-                           f'<table cellpadding="0" cellspacing="0" style="margin-top:4px">{rows_}</table>'))
-    out.append(f'<tr><td style="padding:8px 28px 0;{FONT};font-size:11px;color:{MUTED}">Try your own copper price on the '
-               f'<b>Copper Sensitivity</b> sheet of the attached model (yellow cell).</td></tr>')
     return out
 
 

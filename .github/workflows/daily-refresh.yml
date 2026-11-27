@@ -2,7 +2,7 @@ name: Daily valuation refresh
 
 on:
   schedule:
-    - cron: "20 19 * * 1-5"
+    - cron: "20 21 * * 1-5"
   workflow_dispatch:
     inputs:
       send_email:

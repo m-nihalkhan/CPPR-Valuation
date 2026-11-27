@@ -172,6 +172,20 @@ def copper_section(s):
                f'<td width="45%" valign="top"><div style="{FONT};font-size:11px;letter-spacing:.06em;text-transform:uppercase;'
                f'color:{MUTED};padding-bottom:4px">Most copper-sensitive holdings</div>'
                f'<table width="100%" cellpadding="0" cellspacing="0">{top_rows}</table></td></tr></table></td></tr>')
+    wi = s.get("copper_whatif")
+    if wi and isinstance(wi.get("price"), (int, float)):
+        rows_ = "".join(
+            f'<tr><td style="padding:4px 0;{FONT};font-size:12px;color:{INK}">{escape(m["company"])}</td>'
+            f'<td align="right" style="padding:4px 0 4px 12px;{FONT};font-size:12px;color:{MUTED}">&beta; {beta_txt(m.get("beta"))}</td>'
+            f'<td align="right" style="padding:4px 0 4px 12px;{FONT};font-size:12px;color:{MUTED};white-space:nowrap">'
+            f'{aud(m.get("price_aud"))} &rarr; <b style="color:{INK}">{aud(m.get("whatif_price_aud"))}</b></td>'
+            f'<td align="right" style="padding:4px 0 4px 12px;{FONT};font-size:12px;font-weight:600">{pct(m.get("move"))}</td></tr>'
+            for m in wi.get("most_affected") or [])
+        out.append(callout("#b8692e", "#fbf1e8",
+                           f'Your what-if: copper at US${wi["price"]:,.2f} ({pct(wi.get("change"), 1, False)} vs actual) '
+                           f'&rarr; estimated ETF move <span style="font-size:15px">{pct(wi.get("etf_move"))}</span>',
+                           f'<span style="color:{MUTED};font-size:12px">Most affected holdings (estimated share-price move):</span>'
+                           f'<table cellpadding="0" cellspacing="0" style="margin-top:4px">{rows_}</table>'))
     out.append(f'<tr><td style="padding:8px 28px 0;{FONT};font-size:11px;color:{MUTED}">Try your own copper price on the '
                f'<b>Copper Sensitivity</b> sheet of the attached model (yellow cell).</td></tr>')
     return out

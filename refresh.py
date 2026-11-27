@@ -12,6 +12,7 @@ Run:  pip install -r requirements.txt
 import datetime as dt
 import json
 import math
+import os
 import pathlib
 import time
 from zoneinfo import ZoneInfo
@@ -56,11 +57,9 @@ def last_close(t, info, h=None):
     if h is None or h.empty or "Close" not in h:
         return None, None
     h = h.dropna(subset=["Close"])
-    if h.empty:
-        return None, None
     tzname = info.get("exchangeTimezoneName")
     state = str(info.get("marketState") or "").upper()
-    if tzname:
+    if tzname and not h.empty:
         now_local = dt.datetime.now(ZoneInfo(tzname))
         last_day = h.index[-1].date()
         if last_day >= now_local.date():
@@ -70,9 +69,23 @@ def last_close(t, info, h=None):
                 h = h.iloc[:-1]                         # still trading / not started – drop it
             elif now_local.hour + now_local.minute / 60 < DEFAULT_CLOSE_HOUR:
                 h = h.iloc[:-1]
-    if h.empty:
+    close = num(h["Close"].iloc[-1]) if not h.empty else None
+    day = h.index[-1].date() if not h.empty else None
+    # Yahoo's daily history can lag a day for some exchanges. If the quote shows a newer
+    # official close and that market isn't trading right now, use the quote instead.
+    q_price, q_time = num(info.get("regularMarketPrice")), info.get("regularMarketTime")
+    if q_price and q_time and state != "REGULAR":
+        try:
+            q_dt = (dt.datetime.fromtimestamp(q_time, dt.timezone.utc) if isinstance(q_time, (int, float))
+                    else q_time)
+            q_day = q_dt.astimezone(ZoneInfo(tzname)).date() if tzname else q_dt.date()
+            if day is None or q_day > day:
+                close, day = q_price, q_day
+        except Exception:
+            pass
+    if close is None:
         return None, None
-    return num(h["Close"].iloc[-1]), h.index[-1].date().isoformat()
+    return close, day.isoformat()
 
 
 SISTER_SUFFIXES = [(".TO", ".V"), (".V", ".TO"), (".V", ".CN"), (".TO", ".NE"), (".AX", ".NZ")]
@@ -426,11 +439,15 @@ def main():
     betas = {tk: copper.beta_stats(rets[tk], rets[copper.COPPER_TICKER]) for tk in rows}
     copper.write_sheets(wb, prices, cu_close, cu_date, stamp)
     copper.init_scenario(wb, cu_close)
+    whatif_price = copper.set_whatif(wb, os.environ.get("WHATIF_COPPER_PRICE"))
+    copper.write_charts(wb, prices)
+    copper.fill_beta_chart(wb, {h["ticker"]: {"company": h["company"], **betas.get(h["ticker"], {})} for h in holdings})
     print(f"Copper: {cu_close} US$/lb ({cu_date}); betas for "
           f"{sum(1 for b in betas.values() if b['copper_beta'] is not None)}/{len(betas)} tickers")
 
     wb.calculation.fullCalcOnLoad = True   # Excel recalculates everything on open
     wb.save(WORKBOOK)
+    copper.add_sparklines(WORKBOOK, getattr(wb, "_copper_spark", None))   # openpyxl drops sparklines on save
 
     # ---- JSON for the Lovable dashboard
     out = {"updated": stamp, "source": "Yahoo Finance via yfinance", "etfs": {}}
@@ -464,6 +481,7 @@ def main():
              if x.get("next_earnings_date") and str(x["next_earnings_date"]) <= horizon),
             key=lambda r: r["date"])
         summary.update(copper.etf_summary(items, cu_close, cu_date, prices))
+        summary["copper_whatif"] = copper.whatif_summary(items, summary["copper_beta_weighted"], cu_close, whatif_price)
         out["etfs"][e] = {"summary": summary, "holdings": items}
     JSON_OUT.parent.mkdir(exist_ok=True)
     JSON_OUT.write_text(json.dumps(out, indent=2, default=str))

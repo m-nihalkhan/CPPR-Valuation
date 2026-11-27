@@ -176,9 +176,9 @@ def write_sheets(wb, prices, copper_close, copper_date, stamp):
 
     hs["A1"] = "Copper History – weekly closes (written by refresh.py – do not edit)"
     hs["A1"].font = Font(name="Arial", size=16, bold=True, color=NAVY)
-    hs["A2"] = "Latest copper close (US$/lb):"
+    hs["A2"] = "Latest copper (US$/lb, 1pm NY settle):"
     hs["C2"] = copper_close
-    hs["D2"] = "Close date:"
+    hs["D2"] = "Date:"
     hs["E2"] = copper_date
     hs["G2"] = (f"Friday closes, last {WEEKS + 1} weeks. Copper = COMEX futures (HG=F, US$/lb); "
                 f"stocks in their own trading currency, dividend-adjusted. Refreshed {stamp}.")

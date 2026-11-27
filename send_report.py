@@ -137,7 +137,7 @@ def copper_section(s):
     cov = s.get("copper_beta_coverage")
     sc = s.get("copper_scenarios") or {}
     out.append('<tr><td style="padding:0 22px"><table width="100%" cellpadding="0" cellspacing="0"><tr>'
-               + tile("Copper (US$/lb)", cu_txt, f'{pct(wk)} on the week &middot; close {nice_date(s.get("copper_price_date"))}')
+               + tile("Copper (US$/lb)", cu_txt, f'{pct(wk)} on the week &middot; settle {nice_date(s.get("copper_price_date"))}')
                + tile("ETF copper beta", beta_txt(s.get("copper_beta_weighted")),
                       f'{cov * 100:.0f}% of fund covered' if isinstance(cov, (int, float)) else "")
                + tile("If copper moves ±10%", f'{pct(sc.get("+10%"), 1, False)}',
@@ -172,6 +172,48 @@ def copper_section(s):
                f'color:{MUTED};padding-bottom:4px">Most copper-sensitive holdings</div>'
                f'<table width="100%" cellpadding="0" cellspacing="0">{top_rows}</table></td></tr></table></td></tr>')
     return out
+
+
+def holdings_source():
+    """Holdings source note from the model's Holdings sheet (cell A2)."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(WORKBOOK, read_only=True, data_only=True)
+        v = wb["Holdings"]["A2"].value
+        wb.close()
+        return str(v) if v else None
+    except Exception:
+        return None
+
+
+def sources_block(data, s, hs):
+    """'Sources' footer listing where every figure in the email comes from."""
+    li = f'style="padding:3px 0;{FONT};font-size:11px;color:{MUTED};line-height:1.5"'
+    a = f'style="color:{MUTED}"'
+    items = [
+        f'<b>Share prices, financial statements, analyst consensus EPS and FX rates:</b> '
+        f'<a href="https://finance.yahoo.com" {a}>Yahoo Finance</a> via the yfinance Python library. Each price is the '
+        f'latest official close on the stock&rsquo;s home exchange; data refreshed {escape(str(data.get("updated")))}.',
+    ]
+    if s.get("copper_price") is not None:
+        items.append(
+            f'<b>Copper price:</b> COMEX copper futures, continuous front-month contract (Yahoo ticker HG=F), US$/lb, '
+            f'at the 1:00pm New York settlement time on {nice_date(s.get("copper_price_date"))} &mdash; '
+            f'<a href="https://www.cmegroup.com/trading/metals/base/copper-futures-and-options.html" {a}>CME Group</a>.')
+        items.append('<b>Copper beta:</b> model calculation &ndash; ordinary least squares regression of each holding&rsquo;s '
+                     'weekly return on the COMEX copper futures return over the last 2 years (104 weeks).')
+    src = holdings_source()
+    items.append(f'<b>Holdings and weights:</b> {escape(src)}' if src else
+                 '<b>Holdings and weights:</b> ETF Shares CPPR full holdings table (Holdings sheet of the attached model).')
+    brokers = sorted({f'{x["company"]} &ndash; {escape(str(x["broker_nav_source"]))}' for x in hs
+                      if x.get("broker_nav") and x.get("broker_nav_source")})
+    if brokers:
+        items.append("<b>Broker NAV:</b> " + "; ".join(brokers) + ".")
+    items.append('<b>Valuation multiples:</b> model calculations from the above (P/E, EV/EBITDA and P/NAV per holding; '
+                 'ETF figures are weight-based harmonic averages of positive multiples).')
+    body = "".join(f"<tr><td {li}>{i}</td></tr>" for i in items)
+    return [section("Sources"),
+            f'<tr><td style="padding:0 28px 6px"><table width="100%" cellpadding="0" cellspacing="0">{body}</table></td></tr>']
 
 
 def holdings_table(hs):
@@ -276,6 +318,8 @@ def build_html(data):
             out.append(f'<tr><td style="padding:14px 28px 0;{FONT};font-size:11px;color:#8a5a00">'
                        f'<b>Data notes:</b> ' + escape("; ".join(f'{x["company"]} – {x.get("status")}' for x in problems))
                        + '</td></tr>')
+
+        out.extend(sources_block(data, s, hs))
 
     out.append('<tr><td style="padding:14px"></td></tr></table></div>')
     return "".join(out)

@@ -268,14 +268,51 @@ def fetch(ticker):
     }
 
 
+COPPER_SETTLE = dt.time(13, 0)          # COMEX copper settles at 1:00pm New York time
+
+
+def copper_settlement(t):
+    """Copper price at the 1:00pm New York settlement on the latest completed trading day.
+
+    Copper futures trade almost 24 hours, so Yahoo's daily bar keeps moving during the
+    evening session. Using the hourly bar that ends at 1:00pm gives a fixed, repeatable
+    price whatever time the refresh runs. Returns (price, 'YYYY-MM-DD') or (None, None)."""
+    ny = ZoneInfo("America/New_York")
+    try:
+        h = t.history(period="10d", interval="60m", auto_adjust=False)
+    except Exception:
+        return None, None
+    if h is None or h.empty or "Close" not in h:
+        return None, None
+    h = h.dropna(subset=["Close"])
+    idx = h.index.tz_convert(ny) if h.index.tz is not None else h.index.tz_localize("UTC").tz_convert(ny)
+    now = dt.datetime.now(ny)
+    best = None
+    for ts, close in zip(idx, h["Close"]):
+        end = ts + dt.timedelta(hours=1)                       # bar covers [ts, ts+1h)
+        settle = dt.datetime.combine(ts.date(), COPPER_SETTLE, ny)
+        if end <= settle and settle <= now:                    # only days whose settlement has passed
+            if best is None or ts > best[0]:
+                best = (ts, close)
+    if best is None:
+        return None, None
+    # keep only the bar closest to 1pm on that trading day
+    day = best[0].date()
+    same_day = [(ts, c) for ts, c in zip(idx, h["Close"]) if ts.date() == day
+                and ts + dt.timedelta(hours=1) <= dt.datetime.combine(day, COPPER_SETTLE, ny)]
+    ts, close = max(same_day, key=lambda z: z[0])
+    return num(close), day.isoformat()
+
+
 def fetch_copper():
-    """Latest completed copper futures close (US$/lb) and weekly closes."""
+    """Latest copper settlement-time price (US$/lb) and weekly Friday closes."""
     for attempt in range(RETRIES):
         try:
             t = yf.Ticker(copper.COPPER_TICKER)
-            info = t.info or {}
             hist = t.history(period="2y", interval="1d", auto_adjust=False)
-            close, date = last_close(t, info, hist)
+            close, date = copper_settlement(t)
+            if close is None:                                  # hourly data unavailable: fall back
+                close, date = last_close(t, {}, hist)
             return close, date, copper.weekly_closes(hist)
         except Exception as e:
             print(f"Copper fetch failed ({e}); retrying")

@@ -268,56 +268,37 @@ def fetch(ticker):
     }
 
 
-COPPER_SETTLE = dt.time(13, 0)          # COMEX copper settles at 1:00pm New York time
-
-
-def copper_settlement(t):
-    """Copper price at the 1:00pm New York settlement on the latest completed trading day.
-
-    Copper futures trade almost 24 hours, so Yahoo's daily bar keeps moving during the
-    evening session. Using the hourly bar that ends at 1:00pm gives a fixed, repeatable
-    price whatever time the refresh runs. Returns (price, 'YYYY-MM-DD') or (None, None)."""
-    ny = ZoneInfo("America/New_York")
-    try:
-        h = t.history(period="10d", interval="60m", auto_adjust=False)
-    except Exception:
-        return None, None
-    if h is None or h.empty or "Close" not in h:
-        return None, None
-    h = h.dropna(subset=["Close"])
-    idx = h.index.tz_convert(ny) if h.index.tz is not None else h.index.tz_localize("UTC").tz_convert(ny)
-    now = dt.datetime.now(ny)
-    best = None
-    for ts, close in zip(idx, h["Close"]):
-        end = ts + dt.timedelta(hours=1)                       # bar covers [ts, ts+1h)
-        settle = dt.datetime.combine(ts.date(), COPPER_SETTLE, ny)
-        if end <= settle and settle <= now:                    # only days whose settlement has passed
-            if best is None or ts > best[0]:
-                best = (ts, close)
-    if best is None:
-        return None, None
-    # keep only the bar closest to 1pm on that trading day
-    day = best[0].date()
-    same_day = [(ts, c) for ts, c in zip(idx, h["Close"]) if ts.date() == day
-                and ts + dt.timedelta(hours=1) <= dt.datetime.combine(day, COPPER_SETTLE, ny)]
-    ts, close = max(same_day, key=lambda z: z[0])
-    return num(close), day.isoformat()
-
-
-def fetch_copper():
-    """Latest copper settlement-time price (US$/lb) and weekly Friday closes."""
+def fetch_copper(prev):
+    """Copper price = previous close from Google Finance (COMEX: HGW00), with the trading day it
+    refers to. The 2-year weekly history for the betas still comes from Yahoo (HG=F, same contract).
+    If Google fails, the last good Google price (and its date) is reused and flagged as stale.
+    Returns dict: price, day (ISO), label (for Excel), field, note (for email), weekly."""
+    price, field = copper.google_copper_price()
+    stamp = dt.datetime.now(ZoneInfo("Australia/Sydney")).strftime("%d %b %Y %H:%M")
+    if price is not None:
+        day = copper.copper_close_date(field)
+        kind = "settlement price" if field.startswith("settlement") else "previous close"
+        out = {"price": price, "day": day.isoformat(), "field": kind, "stale": False,
+               "label": f"{day:%a %d %b %Y} ({kind}, Google Finance)",
+               "note": f"{kind} for {day:%a %d %b %Y}, retrieved {stamp} Sydney"}
+    else:
+        print(f"Copper: {field}")
+        ok = isinstance(prev.get("price"), (int, float))
+        out = {"price": prev.get("price") if ok else None, "day": prev.get("day") if ok else None,
+               "field": "previous close", "stale": True,
+               "label": (str(prev.get("label") or "").replace(" – STALE", "") + " – STALE") if ok else "unavailable",
+               "note": (f"STALE – {field}; using the last good value: {str(prev.get('label') or '').replace(' – STALE', '')}"
+                        if ok else f"Unavailable – {field}")}
+    out["weekly"] = None
     for attempt in range(RETRIES):
         try:
-            t = yf.Ticker(copper.COPPER_TICKER)
-            hist = t.history(period="2y", interval="1d", auto_adjust=False)
-            close, date = copper_settlement(t)
-            if close is None:                                  # hourly data unavailable: fall back
-                close, date = last_close(t, {}, hist)
-            return close, date, copper.weekly_closes(hist)
+            hist = yf.Ticker(copper.COPPER_TICKER).history(period="2y", interval="1d", auto_adjust=False)
+            out["weekly"] = copper.weekly_closes(hist)
+            break
         except Exception as e:
-            print(f"Copper fetch failed ({e}); retrying")
+            print(f"Copper history fetch failed ({e}); retrying")
             time.sleep(PAUSE * (attempt + 2) * 2)
-    return None, None, None
+    return out
 
 
 # --------------------------------------------------------------------------- metrics (mirror of the Valuation sheet formulas)
@@ -462,24 +443,25 @@ def main():
 
     # ---- copper beta: weekly history, regression, Copper History / Returns sheets
     prev_weekly = copper.read_previous_weekly(wb)
-    prev_close = wb[copper.HIST_SHEET]["C2"].value if copper.HIST_SHEET in wb.sheetnames else None
-    cu_close, cu_date, cu_weekly = fetch_copper()
+    prev = {}
+    if copper.HIST_SHEET in wb.sheetnames:
+        h_ = wb[copper.HIST_SHEET]
+        prev = {"price": h_["C2"].value, "label": h_["E2"].value, "day": h_["F2"].value}
+    cu = fetch_copper(prev)
+    cu_close, cu_weekly = cu["price"], cu["weekly"]
     if cu_weekly is None:
         cu_weekly = prev_weekly.get(copper.COPPER_TICKER)
-    if cu_close is None and isinstance(prev_close, (int, float)):
-        cu_close = prev_close
-        cu_date = wb[copper.HIST_SHEET]["E2"].value
     stock_weekly = {tk: rec.get("weekly") if rec.get("weekly") is not None else prev_weekly.get(tk)
                     for tk, rec in rows.items()}
     prices = copper.price_table(cu_weekly, stock_weekly, list(rows), dt.datetime.now(dt.timezone.utc))
     rets = copper.returns_table(prices)
     betas = {tk: copper.beta_stats(rets[tk], rets[copper.COPPER_TICKER]) for tk in rows}
-    copper.write_sheets(wb, prices, cu_close, cu_date, stamp)
+    copper.write_sheets(wb, prices, cu_close, cu["label"], stamp, cu["day"], "Copper price: " + cu["note"] + ".")
     copper.init_scenario(wb, cu_close)
     whatif_price = copper.set_whatif(wb, os.environ.get("WHATIF_COPPER_PRICE"))
     copper.write_charts(wb, prices)
     copper.fill_beta_chart(wb, {h["ticker"]: {"company": h["company"], **betas.get(h["ticker"], {})} for h in holdings})
-    print(f"Copper: {cu_close} US$/lb ({cu_date}); betas for "
+    print(f"Copper: {cu_close} US$/lb – {cu['note']}; betas for "
           f"{sum(1 for b in betas.values() if b['copper_beta'] is not None)}/{len(betas)} tickers")
 
     wb.calculation.fullCalcOnLoad = True   # Excel recalculates everything on open
@@ -517,7 +499,8 @@ def main():
             ({"company": x["company"], "date": str(x["next_earnings_date"])} for x in items
              if x.get("next_earnings_date") and str(x["next_earnings_date"]) <= horizon),
             key=lambda r: r["date"])
-        summary.update(copper.etf_summary(items, cu_close, cu_date, prices))
+        summary.update(copper.etf_summary(items, cu_close, cu["note"], prices))
+        summary.update(copper_price_date=cu["day"], copper_price_field=cu["field"], copper_price_stale=cu["stale"])
         # single-price what-if box only when the WHATIF_COPPER_PRICE setting is used
         summary["copper_whatif"] = (copper.whatif_summary(items, summary["copper_beta_weighted"], cu_close, whatif_price)
                                     if os.environ.get("WHATIF_COPPER_PRICE") else None)

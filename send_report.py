@@ -127,6 +127,16 @@ def beta_txt(v):
     return f"{v:.2f}" if isinstance(v, (int, float)) else '<span style="color:#c3c9d2">n/a</span>'
 
 
+def copper_note(s, wk):
+    """Sub-line under the copper price: which day's close, the source, and the weekly move."""
+    field = s.get("copper_price_field") or "previous close"
+    day = nice_date(s.get("copper_price_date")) if s.get("copper_price_date") else "date unknown"
+    if s.get("copper_price_stale"):
+        return (f'<span style="color:#9c5700">&#9888; stale &ndash; Google Finance unavailable today; '
+                f'{field} of {day}</span>')
+    return f'{field} of <b>{day}</b> &middot; Google Finance<br>{pct(wk)} on the week'
+
+
 def copper_section(s):
     """Copper price, ETF copper beta and bear/bull scenarios."""
     if s.get("copper_beta_weighted") is None and s.get("copper_price") is None:
@@ -137,7 +147,7 @@ def copper_section(s):
     cov = s.get("copper_beta_coverage")
     sc = s.get("copper_scenarios") or {}
     out.append('<tr><td style="padding:0 22px"><table width="100%" cellpadding="0" cellspacing="0"><tr>'
-               + tile("Copper (US$/lb)", cu_txt, f'{pct(wk)} on the week &middot; settle {nice_date(s.get("copper_price_date"))}')
+               + tile("Copper (US$/lb)", cu_txt, copper_note(s, wk))
                + tile("ETF copper beta", beta_txt(s.get("copper_beta_weighted")),
                       f'{cov * 100:.0f}% of fund covered' if isinstance(cov, (int, float)) else "")
                + tile("If copper moves ±10%", f'{pct(sc.get("+10%"), 1, False)}',
@@ -197,9 +207,11 @@ def sources_block(data, s, hs):
     ]
     if s.get("copper_price") is not None:
         items.append(
-            f'<b>Copper price:</b> COMEX copper futures, continuous front-month contract (Yahoo ticker HG=F), US$/lb, '
-            f'at the 1:00pm New York settlement time on {nice_date(s.get("copper_price_date"))} &mdash; '
-            f'<a href="https://www.cmegroup.com/trading/metals/base/copper-futures-and-options.html" {a}>CME Group</a>.')
+            f'<b>Copper price:</b> previous close of COMEX copper futures (continuous front-month, US$/lb) from '
+            f'<a href="https://www.google.com/finance/quote/HGW00:COMEX" {a}>Google Finance (COMEX: HGW00)</a>'
+            f' &mdash; {escape(str(s.get("copper_price_source") or ""))}. '
+            f'The 2-year weekly copper history used for the '
+            f'betas is the same COMEX contract from Yahoo Finance (HG=F).')
         items.append('<b>Copper beta:</b> model calculation &ndash; ordinary least squares regression of each holding&rsquo;s '
                      'weekly return on the COMEX copper futures return over the last 2 years (104 weeks).')
     src = holdings_source()

@@ -22,7 +22,8 @@ import math
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 
-COPPER_TICKER = "HG=F"
+COPPER_TICKER = "HG=F"       # Yahoo: used only for the 2-year weekly history behind the betas
+GOOGLE_URL = "https://www.google.com/finance/quote/HGW00:COMEX"   # current copper price (previous close)
 WEEKS = 104                  # weekly returns used (≈ 2 years)
 MIN_OBS = 52                 # fewer paired weeks than this -> no beta
 SHOCKS = (-0.30, -0.20, -0.10, -0.05, 0.05, 0.10, 0.20, 0.30)   # copper moves shown in the email
@@ -35,6 +36,78 @@ NAVY = "1F3864"
 HDR_FONT = Font(name="Arial", size=10, bold=True, color="FFFFFF")
 HDR_FILL = PatternFill("solid", fgColor=NAVY)
 BODY = Font(name="Arial", size=10)
+
+
+# --------------------------------------------------------------------------- Google Finance copper price
+def _first_number_after(text, label, window=400):
+    import re
+    i = text.find(label)
+    if i < 0:
+        return None
+    m = re.search(r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)", text[i + len(label): i + len(label) + window])
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def parse_google_quote(html):
+    """Previous close (US$/lb) from a Google Finance quote page. Falls back to the settlement
+    price, then to last price minus the day's change. Returns (value, field) or (None, reason)."""
+    import html as htmlmod
+    import re
+    text = htmlmod.unescape(re.sub(r"<[^>]+>", " | ", html))
+    text = re.sub(r"\s+", " ", text)
+    for label in ("Previous close", "Settlement price"):
+        v = _first_number_after(text, label)
+        if v and 0.5 < v < 50:
+            return v, label.lower()
+    last = re.search(r'data-last-price="([0-9.]+)"', html)
+    chg = re.search(r'data-last-normal-market-change="?(-?[0-9.]+)', html) or \
+          re.search(r'\(([+-][0-9.]+)\)\s*(?:today|1D)', text)
+    if last and chg:
+        v = float(last.group(1)) - float(chg.group(1))
+        if 0.5 < v < 50:
+            return v, "previous close (price minus day change)"
+    return None, "previous close not found on the page"
+
+
+def _prev_weekday(d):
+    d -= dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def copper_close_date(field, now_utc=None):
+    """Which trading day's close Google's figure refers to, given when it was read.
+
+    COMEX copper trades in sessions that open at 6pm New York time for the next trading day.
+    'Previous close' = the trading day before the session Google is showing.
+    'Settlement price' = the latest settled day (settlement is at about 1:30pm New York).
+    Weekends are skipped; exchange holidays are not modelled."""
+    from zoneinfo import ZoneInfo
+    ny = (now_utc or dt.datetime.now(dt.timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    if field.startswith("settlement"):
+        d = ny.date()
+        if d.weekday() >= 5 or ny.time() < dt.time(13, 30):
+            d = _prev_weekday(d) if d.weekday() < 5 else _prev_weekday(d + dt.timedelta(days=7 - d.weekday()))
+        return d
+    session = ny.date() if ny.time() < dt.time(18, 0) else ny.date() + dt.timedelta(days=1)
+    while session.weekday() >= 5:                     # Sat/Sun -> Monday's session
+        session += dt.timedelta(days=1)
+    return _prev_weekday(session)
+
+
+def google_copper_price(timeout=20):
+    """Fetch the copper previous close from Google Finance (COMEX: HGW00)."""
+    import requests
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                             "Chrome/124.0 Safari/537.36",
+               "Accept-Language": "en-US,en;q=0.9"}
+    try:
+        r = requests.get(GOOGLE_URL, headers=headers, cookies={"CONSENT": "YES+"}, timeout=timeout)
+        r.raise_for_status()
+    except Exception as e:
+        return None, f"Google Finance unavailable ({type(e).__name__})"
+    return parse_google_quote(r.text)
 
 
 # --------------------------------------------------------------------------- data
@@ -167,7 +240,7 @@ def _header(ws, row, values):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-def write_sheets(wb, prices, copper_close, copper_date, stamp):
+def write_sheets(wb, prices, copper_close, copper_date, stamp, copper_iso=None, note=None):
     """Rewrite the Copper History (values) and Copper Returns (formulas) sheets."""
     anchor = "Copper Beta" if "Copper Beta" in wb.sheetnames else "Valuation"
     hs = _sheet(wb, HIST_SHEET, anchor)
@@ -176,16 +249,19 @@ def write_sheets(wb, prices, copper_close, copper_date, stamp):
 
     hs["A1"] = "Copper History – weekly closes (written by refresh.py – do not edit)"
     hs["A1"].font = Font(name="Arial", size=16, bold=True, color=NAVY)
-    hs["A2"] = "Latest copper (US$/lb, 1pm NY settle):"
+    hs["A2"] = "Copper previous close (US$/lb):"
     hs["C2"] = copper_close
-    hs["D2"] = "Date:"
+    hs["D2"] = "Close of:"
     hs["E2"] = copper_date
-    hs["G2"] = (f"Friday closes, last {WEEKS + 1} weeks. Copper = COMEX futures (HG=F, US$/lb); "
-                f"stocks in their own trading currency, dividend-adjusted. Refreshed {stamp}.")
+    hs["F2"] = copper_iso
+    hs["G2"] = (f"Current price: Google Finance (COMEX: HGW00). Weekly history below: Friday closes, last {WEEKS + 1} weeks, "
+                f"Yahoo HG=F (same COMEX contract, US$/lb); "
+                f"stocks in their own trading currency, dividend-adjusted. Refreshed {stamp}." + (f" {note}" if note else ""))
     for ref in ("A2", "D2"):
         hs[ref].font = Font(name="Arial", size=10, bold=True)
     hs["C2"].number_format = '"US$"0.0000'
     hs["G2"].font = Font(name="Arial", size=9, italic=True, color="595959")
+    hs["F2"].font = Font(name="Arial", size=9, color="FFFFFF")      # machine-readable date (kept out of sight)
     _header(hs, FIRST_ROW - 1, ["Week ending", "Copper (HG=F)"] + names[1:])
     for i, (d, row) in enumerate(prices.iterrows()):
         r = FIRST_ROW + i
@@ -286,7 +362,7 @@ def etf_summary(items, copper_close, copper_date, prices):
         scen[f"{shock:+.0%}"] = beta * shock if beta is not None else None
     ranked = sorted((x for x in items if isinstance(x.get("copper_beta"), (int, float))),
                     key=lambda x: x["copper_beta"], reverse=True)
-    return {"copper_price": copper_close, "copper_price_date": copper_date, "copper_week_change": wk,
+    return {"copper_price": copper_close, "copper_price_source": copper_date, "copper_week_change": wk,
             "copper_beta_weighted": beta, "copper_beta_coverage": covered,
             "copper_scenarios": scen,
             "copper_top_beta": [{"company": x["company"], "beta": x["copper_beta"], "r2": x.get("copper_r2"),

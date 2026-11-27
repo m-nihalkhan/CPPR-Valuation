@@ -3,21 +3,22 @@
 This is a simplified multiples model covering all 50 CPPR holdings. It refreshes every weekday from Yahoo Finance and feeds a Lovable dashboard.
 
 ```
-Yahoo Finance ──(yfinance, daily via GitHub Actions ~6am Sydney)──► refresh.py
+Yahoo Finance ──(yfinance, daily via GitHub Actions after the US close)──► refresh.py
                                                          ├─► CPPR_Valuation_Model.xlsx  (Data sheet → formulas → Dashboard)
                                                          └─► data/valuation.json        (read live by the Lovable website)
                                                                     │
-                                              send_report.py ◄──────┘  waits until 08:00 Sydney, emails summary + workbook
+                                              send_report.py ◄──────┘  emails summary + workbook at 8:00 Sydney (≈8:25 in summer)
 ```
 
 ## What's in the repo
 
 | File | Purpose |
 |---|---|
-| `CPPR_Valuation_Model.xlsx` | The model. Sheets: Cover, Dashboard, Holdings, Data, Valuation, Lists |
+| `CPPR_Valuation_Model.xlsx` | The model. Sheets: Cover, Dashboard, Holdings, Data, Valuation, Copper Sensitivity, Copper Scenarios, Copper Beta, Copper History, Copper Returns (Lists is hidden) |
 | `refresh.py` | Pulls Yahoo data, fills the Data sheet, and writes `data/valuation.json` |
+| `copper.py` | Copper beta: weekly history, regression statistics and the Copper History / Returns sheets (called by `refresh.py`) |
 | `send_report.py` | Builds the 8am HTML email (ETF summary, top 10, new results, upcoming reports) and attaches the workbook |
-| `.github/workflows/daily-refresh.yml` | Runs `refresh.py` at about 6:20am Sydney (5:20am in winter), Tue–Sat, publishes the data, then sends the email at 8:00 |
+| `.github/workflows/daily-refresh.yml` | Runs `refresh.py` Tue–Sat at 8:20am Sydney in summer / 7:20am in winter (always after the US close), publishes the data, then sends the email |
 | `requirements.txt` | Python packages |
 
 ## Outputs per holding
@@ -40,11 +41,22 @@ To run it on your own computer instead: `pip install -r requirements.txt`, then 
 
 ## How the automatic updates work
 
-- **Daily close prices.** GitHub runs the workflow every weekday at about 6:20am Sydney (AEDT; 5:20am in winter). By then the ASX, Asian, European and US/Canadian markets have all closed, so every price is the previous session's close. The JSON and workbook are committed straight away, so the dashboard is current from about 6:30am.
-- **8am email.** The same job then waits until 08:00 Sydney time (daylight saving is handled automatically) and sends the email. GitHub's scheduler can start jobs late at busy times; the early start leaves room for that. If the job ever starts after 8am, the email goes out as soon as the refresh finishes.
+- **Closing prices.** Each price is the official close of the latest *completed* session on that stock's home exchange: the ASX for BHP, the TSX for Hudbay, the LSE for Anglo American, NYSE for Freeport, and so on. `refresh.py` reads Yahoo's daily price history and drops today's bar if that exchange is still trading, so a mid-session price is never used. The close date and exchange are saved for every holding (Data sheet, Dashboard, JSON and email).
+- **Timing.** The US and Canadian markets close at 8:00am Sydney time from November to early March (6–7am the rest of the year). So GitHub runs the refresh at 21:20 UTC: 7:20am Sydney in winter and 8:20am in summer. The dashboard updates as soon as it finishes.
+- **Email.** It goes out at 8:00am in winter (Apr–Oct). In summer (Nov–Mar) it goes out straight after the refresh, at about 8:25am. Sending at 8:00 sharp in summer would mean the US and Canadian holdings showed the close from a day earlier. GitHub's scheduler can occasionally start a few minutes late.
 - **New financial statements.** Every run re-downloads each company's latest balance sheet, income statement and consensus estimates, so new results flow into the multiples the morning after Yahoo publishes them. You don't need a separate trigger. The script records each company's latest statement period end. When it moves forward, the company is flagged as **new results** in the JSON, the dashboard and the email. The email also lists companies due to report in the next 14 days. To pick up a big result immediately, use **Run workflow**.
 - **Weekends and holidays.** Saturday's run picks up Friday's US close. On market holidays the prices simply don't change.
 - **Keep-alive.** GitHub pauses scheduled workflows in repos with no activity for 60 days. The daily commit normally counts as activity, but if you see a "scheduled workflow disabled" banner, re-enable it in the Actions tab.
+
+## Copper price sensitivity (what-if analysis)
+
+- **Copper beta.** Each morning `copper.py` takes two years of weekly (Friday) closes for every holding and for COMEX copper futures (`HG=F`, US$/lb), and regresses each stock's weekly return on copper's weekly return (104 weeks, ordinary least squares). Stock returns are in each stock's own currency and dividend-adjusted, so exchange-rate moves don't distort the copper beta. A beta needs at least 52 paired weeks. R² below 0.10 is flagged as weak.
+- **Copper Beta sheet.** Beta, R², correlation, observations, standard error and 95% confidence interval for every holding, all as live Excel formulas (`SLOPE`, `RSQ`, `CORREL`, `TINV`) on the Copper Returns sheet. The Python calculation gives identical results (tested to 1e-11).
+- **ETF copper beta.** The weight-averaged beta of holdings that have one. The rest are re-weighted, and the coverage is shown.
+- **Copper Sensitivity sheet (what-if).** Type a copper price in the yellow cell. Each holding's estimated share-price move = beta × copper % change, and the sheet shows what-if price, market cap, EV, trailing / current / forward P/E, EV/EBITDA and P/NAV next to the actual figures, plus bear / base / bull cases for the ETF. The refresh never overwrites the yellow inputs. A 0% copper move reproduces the actual figures exactly.
+- **Copper Scenarios sheet.** Estimated move for every holding and the ETF at copper moves from −30% to +30% (editable), colour-coded.
+- **Email.** A copper section with the copper price and weekly change, ETF copper beta, ±10% / ±20% ETF scenarios and the five most copper-sensitive holdings, plus a Cu β column in the holdings table.
+- **Limitations.** This is a market-price sensitivity based on historical co-movement, not a fundamental earnings model: EPS, EBITDA, net debt, book NAV, FX and shares are held constant, so a higher what-if share price also raises the P/E. Betas change over time, and diversified or downstream companies (e.g. BHP, Aurubis) and explorers tend to have low R².
 
 ## Maintaining it
 
@@ -60,18 +72,18 @@ To run it on your own computer instead: `pip install -r requirements.txt`, then 
 > **Data:** on load, fetch JSON from `https://raw.githubusercontent.com/<your-username>/cppr-valuation/main/data/valuation.json` and add a "Refresh" button that re-fetches. Shape:
 > `{ updated: string, etfs: { [etfCode]: { summary: {...}, holdings: [ {...} ] } } }`.
 > Summary fields: `holdings, with_data, loss_making, market_value_aud, pe_trailing_weighted, pe_trailing_coverage, pe_current_weighted, pe_current_coverage, pe_forward_weighted, pe_forward_coverage, ev_ebitda_weighted, ev_ebitda_coverage, p_nav_weighted, p_nav_coverage`.
-> Holding fields: `company, ticker, country, weight, price, currency, equity_value_m, equity_value_aud_m, net_debt_m, minority_m, enterprise_value_m, enterprise_value_aud_m, ebitda_ttm_m, ev_ebitda, pe_trailing, pe_current, pe_forward, nav_per_share, p_nav, broker_nav, broker_nav_source, p_broker_nav, yahoo_pe, yahoo_forward_pe, yahoo_ev_ebitda, status, last_updated, statement_date, next_earnings_date, new_results`.
+> Holding fields: `company, ticker, country, weight, price, currency, equity_value_m, equity_value_aud_m, net_debt_m, minority_m, enterprise_value_m, enterprise_value_aud_m, ebitda_ttm_m, ev_ebitda, pe_trailing, pe_current, pe_forward, nav_per_share, p_nav, broker_nav, broker_nav_source, p_broker_nav, yahoo_pe, yahoo_forward_pe, yahoo_ev_ebitda, status, last_updated, statement_date, next_earnings_date, new_results, close_date, exchange`.
 > Summary also has `new_results` (array of company names) and `upcoming_earnings` (array of `{company, date}`).
-> Any metric can be a number, the string "NM" (not meaningful, e.g. negative earnings), or null (no data). Show null as "n/a" and "NM" as "NM" in grey.
+> Any metric can be a number (negative multiples mean the company is loss-making – show them in red, e.g. "-12.3x"), the string "NM" (zero denominator, rare), or null (no data). Show null as "n/a" in grey. The bar chart should skip negative, NM and null values.
 >
 > **Layout:**
 > 1. Header: title, "Data as at {updated}", Refresh button. If `updated` is more than 30 hours old, show an amber "data may be stale" badge.
 > 1b. An alert strip under the header when the selected ETF's `summary.new_results` is non-empty ("New results: …"), and a small "Reporting soon" list from `summary.upcoming_earnings`.
 > 2. Two dropdowns side by side: **ETF** (keys of `etfs`), then **Company** (holdings of the selected ETF, sorted by weight, descending). Changing the ETF resets the company to the largest holding.
-> 3. **Company panel** (cards): Price + currency, Weight, Equity value (local m and A$m), Enterprise value (local m and A$m), Trailing P/E, Current P/E, Forward P/E, EV/EBITDA, Book NAV/share, P/NAV, Broker NAV and P/Broker NAV (only if `broker_nav` is set, with the source as a tooltip). Below that, a small "Yahoo cross-check" row with Yahoo's own P/E, forward P/E and EV/EBITDA, plus the data status, last-updated time, latest statement date and next earnings date. Show a "New results" badge when `new_results` is true.
+> 3. **Company panel** (cards): Price + currency, Weight, Equity value (local m and A$m), Enterprise value (local m and A$m), Trailing P/E, Current P/E, Forward P/E, EV/EBITDA, Book NAV/share, P/NAV, Broker NAV and P/Broker NAV (only if `broker_nav` is set, with the source as a tooltip). Below that, a small "Yahoo cross-check" row with Yahoo's own P/E, forward P/E and EV/EBITDA, plus the data status, closing price date and exchange (`close_date`, `exchange`), last-updated time, latest statement date and next earnings date. Show a "New results" badge when `new_results` is true.
 > 4. **ETF summary** strip: number of holdings, holdings with data, loss-making count, fund value (A$), and weighted Trailing P/E, Current P/E, Forward P/E, EV/EBITDA and P/NAV, each with its coverage %.
 > 5. **Holdings table** for the selected ETF: Company, Ticker, Country, Weight, Price (A$), Trailing P/E, Current P/E, Forward P/E, EV/EBITDA, P/NAV, Equity value (A$m). Sortable columns, a search box, and clicking a row selects that company in the dropdown.
-> 6. A bar chart of Forward P/E by company (skip NM/n/a) for the selected ETF.
+> 6. A bar chart of Forward P/E by company (skip negative, NM and n/a values) for the selected ETF.
 >
 > **Currency:** show every price and value in Australian dollars (`price_aud`, `equity_value_aud_m`, `enterprise_value_aud_m`), prefixed `A$`. Show the local price only as small grey secondary text.
 >
@@ -80,5 +92,6 @@ To run it on your own computer instead: `pip install -r requirements.txt`, then 
 ## Limitations (worth stating in the write-up)
 
 - yfinance is an unofficial Yahoo wrapper for personal and educational use. It can rate-limit or return gaps, so failed tickers keep their last good data and are marked "Stale".
+- Copper betas are historical estimates (2-year weekly regression); treat low-R² holdings with caution.
 - Consensus estimates (current and forward P/E) are often missing for junior explorers, which is common in an equal-weight copper index.
 - EV uses the latest balance sheet and trailing-12-month EBITDA. Book NAV understates value for miners, which is why there's a broker NAV column.

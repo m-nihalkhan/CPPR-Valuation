@@ -2,7 +2,7 @@
 Daily refresh for the ETF valuation model.
 
   1. Reads the tickers on the Holdings sheet of CPPR_Valuation_Model.xlsx
-  2. Pulls price, shares, EPS (trailing + consensus), balance sheet and EBITDA from Yahoo Finance (yfinance)
+  2. Pulls the latest official close on each stock's home exchange, plus shares, EPS (trailing + consensus), balance sheet and EBITDA from Yahoo Finance (yfinance)
   3. Writes the raw numbers into the Data sheet (the Valuation/Dashboard formulas do the rest in Excel)
   4. Writes data/valuation.json with the same metrics, for the Lovable dashboard
 
@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 import openpyxl
 import yfinance as yf
 
+import copper
+
 ROOT = pathlib.Path(__file__).resolve().parent
 WORKBOOK = ROOT / "CPPR_Valuation_Model.xlsx"
 JSON_OUT = ROOT / "data" / "valuation.json"
@@ -32,8 +34,45 @@ SUBUNITS = {"GBp": ("GBP", 100), "GBX": ("GBP", 100), "ZAc": ("ZAR", 100), "ILA"
 DATA_COLS = ["ticker", "status", "updated", "price", "ccy", "fin_ccy", "fx_fin_trade", "fx_trade_aud",
              "shares", "eps_ttm", "eps_fy0", "eps_fy1", "debt", "cash", "minority", "ebitda_ttm",
              "assets", "liabilities", "equity", "y_pe", "y_fpe", "y_ev_ebitda", "y_name",
-             "stmt_date", "next_earnings"]
-DATA_HEADERS = {"stmt_date": "Latest statement period end", "next_earnings": "Next earnings date (Yahoo)"}
+             "stmt_date", "next_earnings", "close_date", "exchange"]
+DATA_HEADERS = {"stmt_date": "Latest statement period end", "next_earnings": "Next earnings date (Yahoo)",
+                "close_date": "Close date (home exchange)", "exchange": "Exchange"}
+
+# Fallback local closing hour if Yahoo doesn't say whether the market is still open
+DEFAULT_CLOSE_HOUR = 17.5
+
+
+def last_close(t, info, h=None):
+    """Official close of the most recent *completed* session on the stock's home exchange.
+
+    Uses the daily price history (unadjusted). If today's bar exists but that exchange is
+    still open (or hasn't reached its close), today's bar is dropped so we never use a
+    mid-session price. Returns (close, 'YYYY-MM-DD') or (None, None)."""
+    if h is None:
+        try:
+            h = t.history(period="10d", interval="1d", auto_adjust=False)
+        except Exception:
+            return None, None
+    if h is None or h.empty or "Close" not in h:
+        return None, None
+    h = h.dropna(subset=["Close"])
+    if h.empty:
+        return None, None
+    tzname = info.get("exchangeTimezoneName")
+    state = str(info.get("marketState") or "").upper()
+    if tzname:
+        now_local = dt.datetime.now(ZoneInfo(tzname))
+        last_day = h.index[-1].date()
+        if last_day >= now_local.date():
+            if state in ("POST", "POSTPOST", "CLOSED"):
+                pass                                    # today's session finished – keep it
+            elif state in ("REGULAR", "PRE", "PREPRE"):
+                h = h.iloc[:-1]                         # still trading / not started – drop it
+            elif now_local.hour + now_local.minute / 60 < DEFAULT_CLOSE_HOUR:
+                h = h.iloc[:-1]
+    if h.empty:
+        return None, None
+    return num(h["Close"].iloc[-1]), h.index[-1].date().isoformat()
 
 
 SISTER_SUFFIXES = [(".TO", ".V"), (".V", ".TO"), (".V", ".CN"), (".TO", ".NE"), (".AX", ".NZ")]
@@ -147,7 +186,15 @@ def eps_to_trading(eps, fx_ft, price, ref_pe):
 def fetch(ticker):
     t = yf.Ticker(ticker)
     info = t.info or {}
-    price = num(info.get("currentPrice")) or num(info.get("regularMarketPrice")) or num(t.fast_info["last_price"])
+    try:   # 2 years of daily prices: latest close + weekly closes for the copper beta
+        hist = t.history(period="2y", interval="1d", auto_adjust=False)
+    except Exception:
+        hist = None
+    price, close_date = last_close(t, info, hist)
+    if price is None:   # no history – fall back to Yahoo's regular-session price
+        price = num(info.get("regularMarketPreviousClose")) if str(info.get("marketState") or "").upper() == "REGULAR" \
+            else (num(info.get("regularMarketPrice")) or num(info.get("currentPrice")))
+        close_date = None
     if price is None:
         raise RuntimeError("no price")
     ccy = info.get("currency") or t.fast_info.get("currency")
@@ -202,7 +249,25 @@ def fetch(ticker):
         "y_name": info.get("longName") or info.get("shortName"),
         "stmt_date": period_end(bs, q_is, a_is),
         "next_earnings": next_earnings_date(t),
+        "close_date": close_date,
+        "exchange": info.get("fullExchangeName") or info.get("exchange"),
+        "weekly": copper.weekly_closes(hist),
     }
+
+
+def fetch_copper():
+    """Latest completed copper futures close (US$/lb) and weekly closes."""
+    for attempt in range(RETRIES):
+        try:
+            t = yf.Ticker(copper.COPPER_TICKER)
+            info = t.info or {}
+            hist = t.history(period="2y", interval="1d", auto_adjust=False)
+            close, date = last_close(t, info, hist)
+            return close, date, copper.weekly_closes(hist)
+        except Exception as e:
+            print(f"Copper fetch failed ({e}); retrying")
+            time.sleep(PAUSE * (attempt + 2) * 2)
+    return None, None, None
 
 
 # --------------------------------------------------------------------------- metrics (mirror of the Valuation sheet formulas)
@@ -210,7 +275,7 @@ def metrics(d, weight, broker_nav=None):
     def ratio(a, b):
         if a is None or b is None:
             return None
-        return a / b if b > 0 else "NM"
+        return a / b if b != 0 else "NM"   # negative = loss-making, shown as a real number
 
     out = {"weight": weight}
     if not d or d.get("price") is None:
@@ -241,6 +306,30 @@ def harmonic(rows, key):
     w = [(r["weight"], r.get(key)) for r in rows if isinstance(r.get(key), (int, float)) and r.get(key) > 0]
     tw = sum(a for a, _ in w)
     return (tw / sum(a / m for a, m in w) if w else None), tw
+
+
+# --------------------------------------------------------------------------- Data sheet formats
+MIL = '#,##0.00,,"m";(#,##0.00,,"m");"-"'          # raw units shown in millions
+NUM2 = '#,##0.00;(#,##0.00);"-"'
+MULT = '0.00"x";[Red]-0.00"x";"-"'
+FX4 = "0.0000"
+DATA_FORMATS = {"price": NUM2, "fx_fin_trade": FX4, "fx_trade_aud": FX4, "shares": MIL,
+                "eps_ttm": NUM2, "eps_fy0": NUM2, "eps_fy1": NUM2,
+                "debt": MIL, "cash": MIL, "minority": MIL, "ebitda_ttm": MIL,
+                "assets": MIL, "liabilities": MIL, "equity": MIL,
+                "y_pe": MULT, "y_fpe": MULT, "y_ev_ebitda": MULT}
+
+
+def style_data_sheet(ws, n):
+    """Re-apply number formats every run, so the Data sheet always reads cleanly."""
+    from openpyxl.styles import Alignment
+    for i in range(n + 5):
+        r = FIRST + i
+        for c, k in enumerate(DATA_COLS, 1):
+            cell = ws.cell(r, c)
+            if k in DATA_FORMATS:
+                cell.number_format = DATA_FORMATS[k]
+                cell.alignment = Alignment(horizontal="right")
 
 
 # --------------------------------------------------------------------------- main
@@ -309,6 +398,7 @@ def main():
         for c, k in enumerate(DATA_COLS, 1):
             da.cell(FIRST + i, c, rows[tk].get(k))
     da["C2"] = stamp
+    style_data_sheet(da, len(rows))
     for c, k in enumerate(DATA_COLS, 1):
         if k in DATA_HEADERS and not da.cell(FIRST - 1, c).value:
             da.cell(FIRST - 1, c, DATA_HEADERS[k])
@@ -319,6 +409,25 @@ def main():
         li.cell(r, 1).value = None
     for i, e in enumerate(etfs):
         li.cell(5 + i, 1, e)
+
+    # ---- copper beta: weekly history, regression, Copper History / Returns sheets
+    prev_weekly = copper.read_previous_weekly(wb)
+    prev_close = wb[copper.HIST_SHEET]["C2"].value if copper.HIST_SHEET in wb.sheetnames else None
+    cu_close, cu_date, cu_weekly = fetch_copper()
+    if cu_weekly is None:
+        cu_weekly = prev_weekly.get(copper.COPPER_TICKER)
+    if cu_close is None and isinstance(prev_close, (int, float)):
+        cu_close = prev_close
+        cu_date = wb[copper.HIST_SHEET]["E2"].value
+    stock_weekly = {tk: rec.get("weekly") if rec.get("weekly") is not None else prev_weekly.get(tk)
+                    for tk, rec in rows.items()}
+    prices = copper.price_table(cu_weekly, stock_weekly, list(rows), dt.datetime.now(dt.timezone.utc))
+    rets = copper.returns_table(prices)
+    betas = {tk: copper.beta_stats(rets[tk], rets[copper.COPPER_TICKER]) for tk in rows}
+    copper.write_sheets(wb, prices, cu_close, cu_date, stamp)
+    copper.init_scenario(wb, cu_close)
+    print(f"Copper: {cu_close} US$/lb ({cu_date}); betas for "
+          f"{sum(1 for b in betas.values() if b['copper_beta'] is not None)}/{len(betas)} tickers")
 
     wb.calculation.fullCalcOnLoad = True   # Excel recalculates everything on open
     wb.save(WORKBOOK)
@@ -337,11 +446,14 @@ def main():
                      last_updated=(d or {}).get("updated"),
                      statement_date=(d or {}).get("stmt_date"),
                      next_earnings_date=(d or {}).get("next_earnings"),
+                     **betas.get(h["ticker"], {}),
+                     close_date=(d or {}).get("close_date"),
+                     exchange=(d or {}).get("exchange"),
                      new_results=bool((d or {}).get("new_results")))
             items.append(m)
         summary = {"holdings": len(items),
                    "with_data": sum(1 for x in items if x.get("price") is not None),
-                   "loss_making": sum(1 for x in items if x.get("pe_trailing") == "NM"),
+                   "loss_making": sum(1 for x in items if isinstance(x.get("pe_trailing"), (int, float)) and x["pe_trailing"] < 0),
                    "market_value_aud": sum(h["mv"] for h in hs)}
         for key in ("pe_trailing", "pe_current", "pe_forward", "ev_ebitda", "p_nav"):
             summary[f"{key}_weighted"], summary[f"{key}_coverage"] = harmonic(items, key)
@@ -351,6 +463,7 @@ def main():
             ({"company": x["company"], "date": str(x["next_earnings_date"])} for x in items
              if x.get("next_earnings_date") and str(x["next_earnings_date"]) <= horizon),
             key=lambda r: r["date"])
+        summary.update(copper.etf_summary(items, cu_close, cu_date, prices))
         out["etfs"][e] = {"summary": summary, "holdings": items}
     JSON_OUT.parent.mkdir(exist_ok=True)
     JSON_OUT.write_text(json.dumps(out, indent=2, default=str))
